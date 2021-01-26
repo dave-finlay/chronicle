@@ -94,8 +94,12 @@ content_types_accepted(Req, State) ->
 delete_resource(Req, State) ->
     Key = cowboy_req:binding(key, Req),
     ?LOG_DEBUG("delete_resource called for key: ~p", [Key]),
-    ok = delete_value(Req, any),
-    {true, reply_json(200, <<"ok">>, Req), State}.
+    case delete_value(Req, any) of
+        ok ->
+            {true, reply_json(200, <<"ok">>, Req), State};
+        {error, Error} ->
+            {false, reply_json(400, {[{error, Error}]}, Req), State}
+    end.
 
 allow_missing_post(Req, State) ->
     {false, Req, State}.
@@ -221,6 +225,28 @@ do_get_value(Key, Consistency) ->
             not_found
     end.
 
+do_chonicle_kv_update(Op, Key, Body, ExpectedRevision) ->
+    Fun = fun() ->
+        case Op of
+            set ->
+                {ok, _} = chronicle_kv:set(kv, Key, Body, ExpectedRevision);
+            delete ->
+                {ok, _} = chronicle_kv:delete(kv, Key, ExpectedRevision)
+        end
+    end,
+    {Pid, MRef} = spawn_monitor(Fun),
+    receive
+        {'DOWN', MRef, _, Pid, Reason} = Msg ->
+            case Reason of
+                normal ->
+                    ok;
+                no_leader ->
+                    {error, no_leader};
+                _ ->
+                    exit(Msg)
+            end
+    end.
+
 set_value(Req, ExpectedRevision) ->
     BinKey = cowboy_req:binding(key, Req),
     Key = binary_to_list(BinKey),
@@ -229,19 +255,30 @@ set_value(Req, ExpectedRevision) ->
     ?LOG_DEBUG("read content: ~p", [Body]),
     try jiffy:decode(Body) of
         _ ->
-            {ok, _} = chronicle_kv:set(kv, Key, Body, ExpectedRevision),
-            {true, reply_json(200, <<"ok">>, Req1)}
+            case do_chonicle_kv_update(set, Key, Body, ExpectedRevision) of
+                ok ->
+                    {true, reply_json(200, <<"ok">>, Req1)};
+                {error, Error} ->
+                    ?LOG_DEBUG("Failed to set value for key: ~p, reason: ~p",
+                        [Key, Error]),
+                    {false, reply_json(400, {[{error, Error}]}, Req1)}
+            end
     catch _:_ ->
-            ?LOG_DEBUG("body not json: ~p", [Body]),
-            {false, reply_json(400, {[{error, <<"invalid json">>}]}, Req1)}
+        ?LOG_DEBUG("invalid json: ~p", [Body]),
+        {false, reply_json(400, {[{error, <<"invalid json">>}]}, Req1)}
     end.
 
 delete_value(Req, ExpectedRevision) ->
     BinKey = cowboy_req:binding(key, Req),
     Key = binary_to_list(BinKey),
     ?LOG_DEBUG("deleting key: ~p", [Key]),
-    {ok, _} = chronicle_kv:delete(kv, Key, ExpectedRevision),
-    ok.
+    case do_chonicle_kv_update(delete, Key, undefined, ExpectedRevision) of
+        ok ->
+            ok;
+        {error, Error} ->
+            ?LOG_DEBUG("Failed to delete key: ~p, reason: ~p", [Key, Error]),
+            {error, Error}
+    end.
 
 parse_nodes(Body) ->
     try jiffy:decode(Body) of
