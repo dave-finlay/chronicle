@@ -227,13 +227,13 @@ do_get_value(Key, Consistency) ->
 
 do_chonicle_kv_update(Op, Key, Body, ExpectedRevision) ->
     Fun = fun() ->
-        case Op of
-            set ->
-                {ok, _} = chronicle_kv:set(kv, Key, Body, ExpectedRevision);
-            delete ->
-                {ok, _} = chronicle_kv:delete(kv, Key, ExpectedRevision)
-        end
-    end,
+                  case Op of
+                      set ->
+                          {ok, _} = chronicle_kv:set(kv, Key, Body, ExpectedRevision);
+                      delete ->
+                          {ok, _} = chronicle_kv:delete(kv, Key, ExpectedRevision)
+                  end
+          end,
     {Pid, MRef} = spawn_monitor(Fun),
     receive
         {'DOWN', MRef, _, Pid, Reason} = Msg ->
@@ -242,6 +242,13 @@ do_chonicle_kv_update(Op, Key, Body, ExpectedRevision) ->
                     ok;
                 no_leader ->
                     {error, no_leader};
+                {noproc, {gen_statem, call, [_Server, Request, _Timeout]}} ->
+                    case element(1, Request) of
+                        wait_for_leader ->
+                            {error, no_leader};
+                        _ ->
+                            exit(Msg)
+                    end;
                 _ ->
                     exit(Msg)
             end
