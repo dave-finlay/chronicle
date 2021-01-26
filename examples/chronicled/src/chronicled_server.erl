@@ -94,8 +94,8 @@ content_types_accepted(Req, State) ->
 delete_resource(Req, State) ->
     Key = cowboy_req:binding(key, Req),
     ?LOG_DEBUG("delete_resource called for key: ~p", [Key]),
-    Result = delete_value(Req, any),
-    {Result, Req, State}.
+    ok = delete_value(Req, any),
+    {true, reply_json(200, <<"ok">>, Req), State}.
 
 allow_missing_post(Req, State) ->
     {false, Req, State}.
@@ -230,10 +230,10 @@ set_value(Req, ExpectedRevision) ->
     try jiffy:decode(Body) of
         _ ->
             {ok, _} = chronicle_kv:set(kv, Key, Body, ExpectedRevision),
-            {true, Req1}
+            {true, reply_json(200, <<"ok">>, Req1)}
     catch _:_ ->
             ?LOG_DEBUG("body not json: ~p", [Body]),
-            {false, Req}
+            {false, reply_json(400, {[{error, <<"invalid json">>}]}, Req1)}
     end.
 
 delete_value(Req, ExpectedRevision) ->
@@ -241,7 +241,7 @@ delete_value(Req, ExpectedRevision) ->
     Key = binary_to_list(BinKey),
     ?LOG_DEBUG("deleting key: ~p", [Key]),
     {ok, _} = chronicle_kv:delete(kv, Key, ExpectedRevision),
-    true.
+    ok.
 
 parse_nodes(Body) ->
     try jiffy:decode(Body) of
